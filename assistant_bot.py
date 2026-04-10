@@ -9,7 +9,6 @@ import os
 import asyncio
 import logging
 import re
-from datetime import datetime
 
 from telethon import TelegramClient, events
 from telethon.tl.types import SendMessageTypingAction
@@ -28,7 +27,7 @@ ADMIN_ID = int(os.environ["ADMIN_ID"])               # Channel owner's user ID
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").lstrip("@")  # e.g., "Squad4xAdmin"
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-# Optional: list of keywords that indicate a question (if not mention/reply)
+# Optional: keywords that indicate a question (if not mention/reply)
 QUESTION_KEYWORDS = ["what", "how", "why", "when", "where", "who", "can you", "please explain", "tell me", "ምን", "እንዴት", "ለምን", "መቼ", "እባክህ"]
 
 # ========== GEMINI SETUP ==========
@@ -81,40 +80,6 @@ async def ask_gemini(question: str) -> str:
             log.warning(f"Gemini error: {e}")
             return "Sorry, I encountered an error while processing your request."
 
-# ========== CHECK IF MESSAGE IS ADDRESSED TO ADMIN ==========
-def is_addressed_to_admin(event, sender) -> bool:
-    """Return True if the message is a question directed to the channel owner."""
-    text = event.raw_text or ""
-    if not text:
-        return False
-
-    # 1. Direct reply to admin's message
-    if event.is_reply:
-        try:
-            reply_to_msg = await event.get_reply_message()
-            if reply_to_msg and reply_to_msg.sender_id == ADMIN_ID:
-                return True
-        except:
-            pass
-
-    # 2. Mention admin's username
-    if ADMIN_USERNAME and f"@{ADMIN_USERNAME}" in text:
-        return True
-
-    # 3. Mention "admin" or "owner" (common in groups)
-    if re.search(r'\b(admin|owner|ሰላጤ|ባለቤት)\b', text, re.IGNORECASE):
-        return True
-
-    # 4. Contains question keywords and not obviously a spam message
-    # (optional: to avoid answering every random message)
-    words = text.lower().split()
-    if any(kw in text.lower() for kw in QUESTION_KEYWORDS):
-        # Also require at least 5 words to avoid "hi" etc.
-        if len(words) >= 4:
-            return True
-
-    return False
-
 # ========== GROUP MESSAGE HANDLER ==========
 @bot.on(events.NewMessage(chats=GROUP_ID))
 async def handler(event):
@@ -130,21 +95,46 @@ async def handler(event):
     if sender.id == ADMIN_ID:
         return
 
-    # Check if this message is a question for the admin
-    if not is_addressed_to_admin(event, sender):
+    text = event.raw_text or ""
+    if not text:
         return
 
-    # Extract the question text
-    question = event.raw_text or ""
-    if not question:
+    # 1. Check if message is a reply to admin
+    is_reply_to_admin = False
+    if event.is_reply:
+        try:
+            reply_msg = await event.get_reply_message()
+            if reply_msg and reply_msg.sender_id == ADMIN_ID:
+                is_reply_to_admin = True
+        except Exception:
+            pass
+
+    # 2. Check if message mentions admin's username
+    mentions_admin = ADMIN_USERNAME and f"@{ADMIN_USERNAME}" in text
+
+    # 3. Check for keywords like "admin", "owner" (common in groups)
+    admin_keywords = re.search(r'\b(admin|owner|ሰላጤ|ባለቤት)\b', text, re.IGNORECASE)
+
+    # 4. Optional: if no direct address but contains question keywords and is long enough
+    has_question_keywords = any(kw in text.lower() for kw in QUESTION_KEYWORDS)
+    is_long_enough = len(text.split()) >= 4
+
+    # Decide: respond only if clearly addressed to admin
+    is_addressed = is_reply_to_admin or mentions_admin or admin_keywords
+    # If you want to also catch questions that might be intended for admin but not directly addressed,
+    # uncomment the line below (be careful: may cause false positives)
+    # if not is_addressed and has_question_keywords and is_long_enough:
+    #     is_addressed = True
+
+    if not is_addressed:
         return
 
-    log.info(f"📨 Question for admin from {sender.first_name} (@{sender.username or 'no username'}): {question[:100]}")
+    log.info(f"📨 Question for admin from {sender.first_name} (@{sender.username or 'no username'}): {text[:100]}")
 
     # Show typing animation
     async with bot.action(event.chat_id, SendMessageTypingAction()):
         await asyncio.sleep(2)   # Simulate thinking/typing
-        answer = await ask_gemini(question)
+        answer = await ask_gemini(text)
 
     # Format answer professionally
     reply_text = f"🤖 *Squad 4x Assistant*:\n\n{answer}"
