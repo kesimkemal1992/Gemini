@@ -4,6 +4,7 @@
 # Auto Proxy Scraping: No need to manually collect proxies – the tool scrapes them automatically.
 # URL: https://github.com/javadbazokar/Telegram-Auto-Post-View
 # MODIFIED: Added --amount / -a argument to stop after target views.
+# MODIFIED: Disabled screen clearing so errors appear in logs.
 
 import aiohttp, asyncio
 from re import search
@@ -34,7 +35,7 @@ class Telegram:
         
         self.channel = channel
         self.post = post
-        self.target_views = target_views   # NEW: store target view count
+        self.target_views = target_views
         
         self.cookie_error = 0
         self.sucsess_sent = 0
@@ -74,7 +75,6 @@ class Telegram:
                                 and views_response.status == 200
                             ): 
                                 self.sucsess_sent += 1
-                                # NEW: stop if target reached
                                 if self.target_views and self.sucsess_sent >= self.target_views:
                                     print(f"\n🎯 Successfully reached {self.target_views} views. Stopping.")
                                     exit(0)
@@ -121,7 +121,8 @@ class Telegram:
         while not self.sucsess_sent:
             print(logo)
             print('\n\n        [ Waiting... ]\r')
-            sleep(0.3);system('cls' if name=='nt' else 'clear')
+            sleep(0.3)
+            # DISABLED CLEARING: system('cls' if name=='nt' else 'clear')
 
         while True:
             print(logo)
@@ -136,12 +137,19 @@ class Telegram:
         Token Error:  {self.token_error}
         Cookie Error: {self.cookie_error}
             ''')
-            sleep(0.3);system('cls' if name=='nt' else 'clear')
+            sleep(0.3)
+            # DISABLED CLEARING: system('cls' if name=='nt' else 'clear')
 
 
 class Auto:
     def __init__(self):
         self.proxies = []
+        # IMPORTANT: Create a folder named "ProxyLink" in the same directory as this script.
+        # Inside that folder, create three text files: http.txt, socks4.txt, socks5.txt
+        # Each file should contain ONE proxy source URL per line.
+        # Example content of ProxyLink/http.txt:
+        # https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt
+        # https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt
         try: 
             with open(f'ProxyLink/http.txt', 'r') as file:
                 self.http_sources = file.read().splitlines()
@@ -153,7 +161,8 @@ class Auto:
                 self.socks5_sources = file.read().splitlines()
                 
         except FileNotFoundError: 
-            print(' [ Error ] auto file not found!')
+            print(' [ Error ] ProxyLink folder or one of the .txt files not found!')
+            print(' Create a "ProxyLink" folder with http.txt, socks4.txt, socks5.txt inside.')
             exit()
         
         print(' [ Please Wait ] Scraping proxies... ')
@@ -198,12 +207,12 @@ parser = ArgumentParser()
 parser.add_argument('-c', '--channel', dest='channel', help='Channel user', type=str, required=True)
 parser.add_argument('-pt', '--post', dest='post', help='Post number', type=int, required=True)
 parser.add_argument('-t', '--type', dest='type', help='Proxy type', type=str, required=False)
-parser.add_argument('-m', '--mode', dest='mode', help='Proxy mode', type=str, required=True)
+parser.add_argument('-m', '--mode', dest='mode', help='Proxy mode (auto / l / r)', type=str, required=True)
 parser.add_argument('-p', '--proxy', dest='proxy', help='Proxy file path or user:password@host:port', type=str, required=False)
-parser.add_argument('-a', '--amount', dest='target_views', help='Number of views to send (stop when reached)', type=int, required=False)   # NEW
+parser.add_argument('-a', '--amount', dest='target_views', help='Number of views to send (stop when reached)', type=int, required=False)
 args = parser.parse_args()
 
-api = Telegram(args.channel, args.post, args.target_views)   # MODIFIED: pass target_views
+api = Telegram(args.channel, args.post, args.target_views)
 Thread(target=api.cli).start()
 
 if args.mode[0] == "l":
