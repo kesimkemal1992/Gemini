@@ -9,17 +9,16 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- CONFIG ---
-BOT_TOKEN = "8254387734:AAEd4VK_abdQuwgbFEiadoqj7UwlxDpmg3A" # የቦትህን ቶከን እዚህ አስገባ
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE" # እዚህ ጋር ቶከንህን አስገባ
 SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
     "https://proxyspace.pro/socks5.txt",
-    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt"
 ]
 
-custom_proxies = [] # አንተ በቦቱ የምትልካቸው ፕሮክሲዎች የሚቀመጡበት
+custom_proxies = []
 
 class ViewEngine:
     def __init__(self):
@@ -28,7 +27,8 @@ class ViewEngine:
         self.success, self.start_views, self.current_views = 0, 0, 0
         self.start_time = None
         self.proxies = []
-        self.sem = asyncio.Semaphore(3000) # የRailwayን አቅም ሙሉ በሙሉ ለመጠቀም
+        # Railway እንዳይዘጋው መጠኑ ወደ 500 ዝቅ ተደርጓል (Safe Limit for 500MB RAM)
+        self.sem = asyncio.Semaphore(500) 
 
     async def get_views(self):
         try:
@@ -45,7 +45,6 @@ class ViewEngine:
     async def scrape(self):
         global custom_proxies
         temp = []
-        # አንተ የላክካቸውን ፕሮክሲዎች መጨመር
         if custom_proxies:
             temp.extend(custom_proxies)
             
@@ -65,7 +64,8 @@ class ViewEngine:
             if not self.is_running: return
             try:
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
-                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=6, connect=2)) as s:
+                # Timeout አስተካክለናል
+                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=8, connect=3)) as s:
                     async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1") as r:
                         token = re.search(r'data-view="([^"]+)"', await r.text())
                         if token:
@@ -75,25 +75,28 @@ class ViewEngine:
 
 engine = ViewEngine()
 
-# --- BOT COMMANDS & HANDLERS ---
+# --- BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = ("👋 እንኳን ደህና መጡ!\n\n"
            "▶️ **ለመጀመር:** `/add channel_name post_id target_views`\n"
            "🛑 **ለማቆም:** `/stop`\n"
-           "➕ **ፕሮክሲ ለመጨመር:** የፕሮክሲ ሊስቱን ዝም ብለው እዚህ ኮፒ አድርገው ይላኩ (Paste)።")
+           "➕ **ፕሮክሲ ለመጨመር:** የፕሮክሲ ሊስቱን ዝም ብለው ይላኩ።")
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3: return await update.message.reply_text("💡 ትክክለኛ አጻጻፍ፦ `/add xauusd_x1 164 2000`")
+    if engine.is_running: return await update.message.reply_text("⚠️ ሌላ ስራ እየሰራ ነው! መጀመሪያ `/stop` ይበሉ።")
     
     engine.channel = context.args[0].replace("@","")
     engine.post_id = int(context.args[1])
     engine.target = int(context.args[2])
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
-    engine.start_views = await engine.get_views()
     
     msg = await update.message.reply_text("🚀 ቱርቦ ስራ ተጀምሯል... መረጃው እየመጣ ነው!")
-    asyncio.create_task(work(msg))
+    engine.start_views = await engine.get_views()
+    
+    # ደህንነቱ የተጠበቀ የ Background Task አጀማመር (Railway እንዳይበላሽ)
+    context.application.create_task(work(msg))
 
 async def work(msg):
     while engine.is_running:
@@ -105,14 +108,13 @@ async def work(msg):
             await msg.edit_text(f"✅ በተሳካ ሁኔታ ተጠናቋል! \nጠቅላላ ቪው: {engine.current_views}")
             break
 
-        # Progress Logic
         prog = min(100, int((added / engine.target) * 100)) if engine.target > 0 else 0
         bar = "▓" * (prog // 10) + "░" * (10 - (prog // 10))
         
         elapsed = time.time() - engine.start_time
         rem_time = str(timedelta(seconds=int((engine.target - added) / (added / elapsed)))) if added > 0 else "በመገመት ላይ..."
 
-        text = (f"🔥 **ULTRA SMM MODE**\n"
+        text = (f"🔥 **RAILWAY STABLE MODE**\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"📊 Progress: [{bar}] {prog}%\n"
                 f"✅ አሁን ያለው: `{engine.current_views}`\n"
@@ -126,8 +128,8 @@ async def work(msg):
         except: pass
 
         await engine.scrape()
-        # እስከ 2500 ሙከራዎችን በአንድ ጊዜ ይልካል
-        await asyncio.gather(*[engine.hit(pt, p) for pt, p in engine.proxies[:2500]])
+        # የሙከራውን ብዛት ወደ 800 አውርደነዋል (Railway ላይ Crash እንዳያደርግ)
+        await asyncio.gather(*[engine.hit(pt, p) for pt, p in engine.proxies[:800]])
         await asyncio.sleep(3)
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,17 +142,14 @@ async def receive_proxies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if found:
         global custom_proxies
         custom_proxies.extend([('socks5', p) for p in found])
-        custom_proxies = list(set(custom_proxies)) # የተደገሙትን ማጥፋት
-        await update.message.reply_text(f"✅ {len(found)} አዳዲስ ፕሮክሲዎች ተቀብያለሁ! (ጠቅላላ የራስዎ: {len(custom_proxies)})\nአሁን ቦቱ እነዚህንም አጣምሮ ይጠቀማል።")
-    else:
-        await update.message.reply_text("⚠️ ምንም ትክክለኛ የፕሮክሲ አይፒ (IP:Port) አላገኘሁም።")
+        custom_proxies = list(set(custom_proxies))
+        await update.message.reply_text(f"✅ {len(found)} አዳዲስ ፕሮክሲዎች ተቀብያለሁ! (ጠቅላላ የራስዎ: {len(custom_proxies)})")
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add))
     app.add_handler(CommandHandler("stop", stop))
-    # አዳዲስ ፕሮክሲዎችን ከቻት ለመቀበል የሚረዳው
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_proxies))
-    print("Bot is running...")
+    print("Bot is running securely...")
     app.run_polling()
