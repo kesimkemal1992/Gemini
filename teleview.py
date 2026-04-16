@@ -5,6 +5,7 @@ from argparse import ArgumentParser
 from os import system, name
 from threading import Thread
 from time import sleep
+import random
 
 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
 REGEX = compile(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?")
@@ -16,31 +17,29 @@ AUTO_PROXY_SOURCES = [
     "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt"
+    "https://proxyspace.pro/http.txt"
 ]
 
 class Telegram:
     def __init__(self, channel: str, post: int, amount: int) -> None:
-        self.tasks = 100 
+        self.tasks = 15 # ፍጥነቱን በመቀነስ ቴሌግራም እንዳያግደን ማድረግ
         self.channel = channel
         self.post = post
         self.amount = amount
         self.sucsess_sent = 0
         self.proxy_error = 0
-        self.token_error = 0
         self.proxies = []
 
     async def scrap_all(self):
         self.proxies.clear()
         async with aiohttp.ClientSession() as session:
-            tasks = []
-            for url in AUTO_PROXY_SOURCES:
-                tasks.append(self.fetch(session, url))
+            tasks = [self.fetch(session, url) for url in AUTO_PROXY_SOURCES]
             await asyncio.gather(*tasks)
+        random.shuffle(self.proxies) # ፕሮክሲዎቹን ማደባለቅ
 
     async def fetch(self, session, url):
         try:
-            async with session.get(url, headers={'user-agent': user_agent}, timeout=10) as resp:
+            async with session.get(url, timeout=10) as resp:
                 text = await resp.text()
                 found = REGEX.findall(text)
                 p_type = 'socks5' if 'socks5' in url else 'http'
@@ -53,10 +52,13 @@ class Telegram:
         try:
             connector = ProxyConnector.from_url(f'{proxy_type}://{proxy}')
             async with aiohttp.ClientSession(connector=connector) as session:
+                # በቪውዎች መሃል ትንሽ መጠበቅ (Random Delay)
+                await asyncio.sleep(random.uniform(1, 3))
+                
                 async with session.get(
                     f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme', 
                     headers={'user-agent': user_agent},
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    timeout=10
                 ) as response:
                     html = await response.text()
                     token = search(r'data-view="([^"]+)"', html)
@@ -66,16 +68,15 @@ class Telegram:
                             headers={
                                 'referer': f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme',
                                 'user-agent': user_agent, 'x-requested-with': 'XMLHttpRequest'
-                            }, timeout=aiohttp.ClientTimeout(total=10)
+                            }, timeout=10
                         ) as v_resp:
-                            if (await v_resp.text() == "true"): self.sucsess_sent += 1
+                            if (await v_resp.text() == "true"): 
+                                self.sucsess_sent += 1
         except: self.proxy_error += 1
 
     async def run_auto_tasks(self):
         while self.sucsess_sent < self.amount:
-            print(f" [!] ፕሮክሲዎች እየታደሱ ነው...")
             await self.scrap_all()
-            
             if not self.proxies:
                 await asyncio.sleep(5); continue
 
@@ -84,15 +85,16 @@ class Telegram:
                 batch = self.proxies[i:i+self.tasks]
                 tasks_list = [self.request(p, pt) for pt, p in batch]
                 await asyncio.gather(*tasks_list)
+                # በእያንዳንዱ Batch መሃል 2 ሰከንድ እረፍት
+                await asyncio.sleep(2)
             
-            await asyncio.sleep(2)
         print(f"\n [!] ተጠናቋል! ጠቅላላ: {self.sucsess_sent}")
 
     def cli(self):
         while self.sucsess_sent < self.amount:
             system('cls' if name=='nt' else 'clear')
-            print(f"Target: @{self.channel}/{self.post}\nGoal: {self.amount}\nSuccess: {self.sucsess_sent}\nErrors: {self.proxy_error}")
-            sleep(2)
+            print(f"Target: @{self.channel}/{self.post}\nGoal: {self.amount}\nSuccess: {self.sucsess_sent}\nErrors: {self.proxy_error}\n\n[Status: Running...]")
+            sleep(3)
 
 if __name__ == "__main__":
     parser = ArgumentParser()
