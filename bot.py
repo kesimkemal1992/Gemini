@@ -22,36 +22,67 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
-MAX_CONCURRENT = 30          # Higher concurrency for 5000+ views (Railway allows ~30-50)
-VIEW_TIMEOUT = 10            # Reduced timeout for speed
-PROXY_FILE = "proxies.txt"   # Single file with all proxies (ip:port, one per line)
+MAX_CONCURRENT = 30          # Concurrent requests (Railway free tier can handle ~30)
+VIEW_TIMEOUT = 12            # Seconds per request
+PROXY_TEST_URL = "https://httpbin.org/ip"   # Quick proxy test endpoint
+PROXY_API_URL = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all"
 
 # Conversation states
 WAITING_FOR_LINK, WAITING_FOR_COUNT = range(2)
 
-# ------------------ Proxy Loader (Single File) ------------------
-class ProxyLoader:
+# ------------------ Live Proxy Fetcher ------------------
+class ProxyFetcher:
     @staticmethod
-    async def load_proxies() -> List[str]:
-        """Load proxies from proxies.txt (ip:port format)."""
-        proxies = []
+    async def fetch_live_proxies() -> List[str]:
+        """Fetch fresh HTTP proxies from proxyscrape API."""
         try:
-            with open(PROXY_FILE, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        # Ensure format is ip:port (no protocol)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(PROXY_API_URL, timeout=15) as resp:
+                    if resp.status != 200:
+                        logging.error(f"Proxy API returned {resp.status}")
+                        return []
+                    text = await resp.text()
+                    # Extract IP:PORT lines
+                    proxies = []
+                    for line in text.splitlines():
+                        line = line.strip()
                         if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}$", line):
                             proxies.append(line)
-                        else:
-                            logging.warning(f"Skipping invalid proxy: {line}")
-            logging.info(f"Loaded {len(proxies)} proxies from {PROXY_FILE}")
-        except FileNotFoundError:
-            logging.error(f"Proxy file {PROXY_FILE} not found! Please create it.")
+                    logging.info(f"Fetched {len(proxies)} raw proxies from API")
+                    return proxies
+        except Exception as e:
+            logging.error(f"Failed to fetch proxies: {e}")
             return []
-        return proxies
 
-# ------------------ View Booster (Optimized for High Volume) ------------------
+    @staticmethod
+    async def validate_proxies(proxies: List[str], limit: int = 100) -> List[str]:
+        """Test which proxies actually work (quick connectivity test)."""
+        if not proxies:
+            return []
+        valid = []
+        semaphore = asyncio.Semaphore(20)  # Test 20 at a time
+
+        async def test_one(proxy: str):
+            async with semaphore:
+                connector = ProxyConnector.from_url(f"http://{proxy}")
+                try:
+                    async with aiohttp.ClientSession(connector=connector) as sess:
+                        async with sess.get(PROXY_TEST_URL, timeout=5) as resp:
+                            if resp.status == 200:
+                                return proxy
+                except Exception:
+                    pass
+                return None
+
+        # Test first 'limit' proxies or all if fewer
+        test_proxies = proxies[:min(limit, len(proxies))]
+        tasks = [test_one(p) for p in test_proxies]
+        results = await asyncio.gather(*tasks)
+        valid = [p for p in results if p]
+        logging.info(f"Validated {len(valid)} working proxies out of {len(test_proxies)} tested")
+        return valid
+
+# ------------------ View Booster ------------------
 class TelegramBooster:
     def __init__(self, channel: str, post_id: int, concurrency: int = MAX_CONCURRENT):
         self.channel = channel
@@ -60,7 +91,6 @@ class TelegramBooster:
         self.ua = UserAgent()
 
     async def _get_view_token(self, proxy: str) -> Optional[str]:
-        """Get token using HTTP proxy (default)."""
         url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
         headers = {"User-Agent": self.ua.random}
         connector = ProxyConnector.from_url(f"http://{proxy}")
@@ -68,7 +98,11 @@ class TelegramBooster:
             async with aiohttp.ClientSession(connector=connector) as sess:
                 async with sess.get(url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
                     text = await resp.text()
+                    # Look for the token in the embed page
                     match = re.search(r'window\.telegramEmbed="([^"]+)"', text)
+                    if not match:
+                        # Fallback: try another pattern (some posts use different JS)
+                        match = re.search(r'"token":"([^"]+)"', text)
                     return match.group(1) if match else None
         except Exception:
             return None
@@ -95,12 +129,10 @@ class TelegramBooster:
         return False
 
     async def send_views(self, proxies: List[str], target_count: int) -> int:
-        """Send views using rotating proxies."""
         if not proxies:
             return 0
         semaphore = asyncio.Semaphore(self.concurrency)
         success = 0
-        proxy_count = len(proxies)
 
         async def worker(proxy: str):
             nonlocal success
@@ -111,7 +143,8 @@ class TelegramBooster:
                 if ok:
                     success += 1
 
-        # Create tasks, cycling through proxies
+        # Cycle through proxies
+        proxy_count = len(proxies)
         tasks = []
         for i in range(target_count):
             proxy = proxies[i % proxy_count]
@@ -122,11 +155,11 @@ class TelegramBooster:
 # ------------------ Bot Handlers ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 *Ultimate View Bot (5000+ ready)* 🔥\n\n"
+        "🔥 *Ultimate View Bot (Live Proxies)* 🔥\n\n"
         "Send me a Telegram post URL like:\n"
         "`https://t.me/durov/123`\n\n"
         "Then I'll ask how many views you want.\n"
-        "I will use proxies from `proxies.txt` to send them.",
+        "I will fetch fresh proxies automatically and validate them.",
         parse_mode="Markdown"
     )
     return WAITING_FOR_LINK
@@ -164,21 +197,30 @@ async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post_id = context.user_data["post_id"]
 
     status_msg = await update.message.reply_text(
-        f"🚀 Sending *{count}* views to `{channel}/{post_id}`...\n"
-        "📂 Loading proxies...",
+        f"🚀 Preparing to send *{count}* views to `{channel}/{post_id}`...\n"
+        "🌐 Fetching fresh proxies from API...",
         parse_mode="Markdown"
     )
 
-    # Load proxies from single file
-    proxies = await ProxyLoader.load_proxies()
-    if not proxies:
-        await status_msg.edit_text("❌ No proxies found. Please upload `proxies.txt` with at least 100 proxies.")
+    # Step 1: Fetch raw proxies from API
+    raw_proxies = await ProxyFetcher.fetch_live_proxies()
+    if not raw_proxies:
+        await status_msg.edit_text("❌ Failed to fetch proxies from API. Try again later.")
         return ConversationHandler.END
 
-    await status_msg.edit_text(f"📡 Loaded {len(proxies)} proxies. Sending {count} views...\n⏱️ This may take a while.")
+    await status_msg.edit_text(f"📡 Fetched {len(raw_proxies)} proxies. Testing connectivity...")
 
+    # Step 2: Validate proxies (test first 150 for speed)
+    valid_proxies = await ProxyFetcher.validate_proxies(raw_proxies, limit=150)
+    if not valid_proxies:
+        await status_msg.edit_text("❌ No working proxies found after testing. Try again later (API may have given dead ones).")
+        return ConversationHandler.END
+
+    await status_msg.edit_text(f"✅ Found {len(valid_proxies)} working proxies. Sending {count} views...\n⏱️ This may take a while.")
+
+    # Step 3: Send views using only validated proxies
     booster = TelegramBooster(channel, post_id, concurrency=MAX_CONCURRENT)
-    sent = await booster.send_views(proxies, count)
+    sent = await booster.send_views(valid_proxies, count)
 
     await status_msg.edit_text(
         f"✅ *Complete!*\n"
