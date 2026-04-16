@@ -1,26 +1,30 @@
+import os
 import asyncio
 import logging
 import re
-from typing import Optional, List
+from typing import List, Optional
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
 from fake_useragent import UserAgent
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     ConversationHandler,
-    CallbackQueryHandler,
     MessageHandler,
     filters,
     ContextTypes,
 )
 
 # ------------------ Configuration ------------------
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # Set this as Railway env variable
-MAX_CONCURRENT = 20            # Concurrent requests
-VIEW_TIMEOUT = 15              # Seconds per request
+# Read token from environment variable (Railway)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is not set! Add it in Railway Variables.")
+
+MAX_CONCURRENT = 20          # Concurrent requests
+VIEW_TIMEOUT = 15            # Seconds per request
 
 # Conversation states
 WAITING_FOR_LINK, WAITING_FOR_COUNT = range(2)
@@ -41,6 +45,7 @@ class AutoScraper:
                 logging.warning(f"Missing {fname}, skipping.")
 
         if not sources:
+            logging.error("No proxy source files found. Did you create the auto/ folder?")
             return []
 
         async def fetch_one(url: str) -> List[str]:
@@ -51,7 +56,8 @@ class AutoScraper:
                         # Extract IP:PORT
                         ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b", text)
                         return list(set(ips))
-            except Exception:
+            except Exception as e:
+                logging.warning(f"Failed to fetch {url}: {e}")
                 return []
 
         tasks = [fetch_one(url) for url in sources]
@@ -111,6 +117,8 @@ class TelegramBooster:
 
     async def send_views(self, proxies: List[str], proxy_type: str, target_count: int) -> int:
         """Send views using a rotating proxy list until target reached."""
+        if not proxies:
+            return 0
         semaphore = asyncio.Semaphore(self.concurrency)
         success = 0
 
@@ -182,12 +190,12 @@ async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scraper = AutoScraper()
     proxies = await scraper.fetch_proxies()
     if not proxies:
-        await status_msg.edit_text("❌ No proxies found. Try again later or use different sources.")
+        await status_msg.edit_text("❌ No proxies found. Try again later or check your auto/*.txt files.")
         return ConversationHandler.END
 
     await status_msg.edit_text(f"📡 Found {len(proxies)} proxies. Sending views...")
 
-    # Step 2: Send views (use http proxies, fallback to socks5)
+    # Step 2: Send views (use http proxies, most common)
     booster = TelegramBooster(channel, post_id, concurrency=MAX_CONCURRENT)
     sent = await booster.send_views(proxies, "http", count)
 
@@ -218,6 +226,7 @@ def main():
     )
     app.add_handler(conv_handler)
 
+    logging.info("Bot started. Polling...")
     app.run_polling()
 
 if __name__ == "__main__":
