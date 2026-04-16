@@ -22,9 +22,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
-MAX_CONCURRENT = 30          # Concurrent requests (Railway free tier can handle ~30)
-VIEW_TIMEOUT = 12            # Seconds per request
-PROXY_TEST_URL = "https://httpbin.org/ip"   # Quick proxy test endpoint
+MAX_CONCURRENT = 30
+VIEW_TIMEOUT = 12
+PROXY_TEST_URL = "https://httpbin.org/ip"
 PROXY_API_URL = "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all"
 
 # Conversation states
@@ -34,7 +34,6 @@ WAITING_FOR_LINK, WAITING_FOR_COUNT = range(2)
 class ProxyFetcher:
     @staticmethod
     async def fetch_live_proxies() -> List[str]:
-        """Fetch fresh HTTP proxies from proxyscrape API."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(PROXY_API_URL, timeout=15) as resp:
@@ -42,7 +41,6 @@ class ProxyFetcher:
                         logging.error(f"Proxy API returned {resp.status}")
                         return []
                     text = await resp.text()
-                    # Extract IP:PORT lines
                     proxies = []
                     for line in text.splitlines():
                         line = line.strip()
@@ -56,11 +54,10 @@ class ProxyFetcher:
 
     @staticmethod
     async def validate_proxies(proxies: List[str], limit: int = 100) -> List[str]:
-        """Test which proxies actually work (quick connectivity test)."""
         if not proxies:
             return []
         valid = []
-        semaphore = asyncio.Semaphore(20)  # Test 20 at a time
+        semaphore = asyncio.Semaphore(20)
 
         async def test_one(proxy: str):
             async with semaphore:
@@ -74,7 +71,6 @@ class ProxyFetcher:
                     pass
                 return None
 
-        # Test first 'limit' proxies or all if fewer
         test_proxies = proxies[:min(limit, len(proxies))]
         tasks = [test_one(p) for p in test_proxies]
         results = await asyncio.gather(*tasks)
@@ -82,7 +78,7 @@ class ProxyFetcher:
         logging.info(f"Validated {len(valid)} working proxies out of {len(test_proxies)} tested")
         return valid
 
-# ------------------ View Booster ------------------
+# ------------------ View Booster (UPDATED TOKEN EXTRACTION) ------------------
 class TelegramBooster:
     def __init__(self, channel: str, post_id: int, concurrency: int = MAX_CONCURRENT):
         self.channel = channel
@@ -94,32 +90,44 @@ class TelegramBooster:
         url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
         headers = {"User-Agent": self.ua.random}
         connector = ProxyConnector.from_url(f"http://{proxy}")
+
         try:
             async with aiohttp.ClientSession(connector=connector) as sess:
                 async with sess.get(url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
                     text = await resp.text()
-                    # Look for the token in the embed page
-                    match = re.search(r'window\.telegramEmbed="([^"]+)"', text)
+                    
+                    # --- UPDATED TOKEN EXTRACTION LOGIC ---
+                    # Look for the data-view attribute, which contains the token.
+                    match = re.search(r'data-view="([^"]+)"', text)
                     if not match:
-                        # Fallback: try another pattern (some posts use different JS)
-                        match = re.search(r'"token":"([^"]+)"', text)
-                    return match.group(1) if match else None
-        except Exception:
+                        logging.warning(f"Could not find 'data-view' token for post {self.channel}/{self.post_id}. Response snippet: {text[:500]}")
+                        return None
+                    return match.group(1)
+        except Exception as e:
+            logging.warning(f"Token fetch failed for proxy {proxy}: {e}")
             return None
 
     async def _send_view(self, token: str, proxy: str) -> bool:
-        url = "https://t.me/iv"
+        # The POST request now goes to the '/v/' endpoint.
+        url = f"https://t.me/v/?views={token}"
         headers = {
             "User-Agent": self.ua.random,
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": f"https://t.me/{self.channel}/{self.post_id}",
+            "X-Requested-With": "XMLHttpRequest"
         }
-        data = f"token={token}&post_id={self.post_id}&channel={self.channel}"
         connector = ProxyConnector.from_url(f"http://{proxy}")
         try:
             async with aiohttp.ClientSession(connector=connector) as sess:
-                async with sess.post(url, headers=headers, data=data, timeout=VIEW_TIMEOUT) as resp:
-                    return resp.status == 200
-        except Exception:
+                async with sess.post(url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
+                    response_text = await resp.text()
+                    # A successful request returns the string "true".
+                    if response_text == "true" and resp.status == 200:
+                        return True
+                    else:
+                        logging.warning(f"View send failed. Status: {resp.status}, Response: {response_text[:100]}")
+                        return False
+        except Exception as e:
+            logging.warning(f"Send view failed for proxy {proxy}: {e}")
             return False
 
     async def send_one_view(self, proxy: str) -> bool:
@@ -143,7 +151,6 @@ class TelegramBooster:
                 if ok:
                     success += 1
 
-        # Cycle through proxies
         proxy_count = len(proxies)
         tasks = []
         for i in range(target_count):
@@ -202,7 +209,6 @@ async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-    # Step 1: Fetch raw proxies from API
     raw_proxies = await ProxyFetcher.fetch_live_proxies()
     if not raw_proxies:
         await status_msg.edit_text("❌ Failed to fetch proxies from API. Try again later.")
@@ -210,7 +216,6 @@ async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await status_msg.edit_text(f"📡 Fetched {len(raw_proxies)} proxies. Testing connectivity...")
 
-    # Step 2: Validate proxies (test first 150 for speed)
     valid_proxies = await ProxyFetcher.validate_proxies(raw_proxies, limit=150)
     if not valid_proxies:
         await status_msg.edit_text("❌ No working proxies found after testing. Try again later (API may have given dead ones).")
@@ -218,7 +223,6 @@ async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await status_msg.edit_text(f"✅ Found {len(valid_proxies)} working proxies. Sending {count} views...\n⏱️ This may take a while.")
 
-    # Step 3: Send views using only validated proxies
     booster = TelegramBooster(channel, post_id, concurrency=MAX_CONCURRENT)
     sent = await booster.send_views(valid_proxies, count)
 
