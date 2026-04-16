@@ -43,8 +43,6 @@ PROXY_SOURCES = [
     "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
 ]
 
-]
-
 class ViewEngine:
     def __init__(self):
         self.is_running = False
