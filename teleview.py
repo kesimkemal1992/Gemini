@@ -9,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # --- CONFIGURATION ---
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE" # እዚህ ጋር የቦት ቶከንህን አስገባ
+BOT_TOKEN = "8254387734:AAEd4VK_abdQuwgbFEiadoqj7UwlxDpmg3A" # እዚህ ጋር የቦት ቶከንህን አስገባ
 SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
