@@ -3,6 +3,7 @@
 # Full Proxy Support: HTTP/S, SOCKS4, SOCKS5 proxies are fully supported.
 # Auto Proxy Scraping: No need to manually collect proxies – the tool scrapes them automatically.
 # URL: https://github.com/javadbazokar/Telegram-Auto-Post-View
+# MODIFIED: Added --amount / -a argument to stop after target views.
 
 import aiohttp, asyncio
 from re import search
@@ -27,12 +28,13 @@ REGEX = compile(
 
 
 class Telegram:
-    def __init__(self, channel: str, post: int) -> None:
+    def __init__(self, channel: str, post: int, target_views: int = None) -> None:
         # Async Tasks
         self.tasks = 225 
         
         self.channel = channel
         self.post = post
+        self.target_views = target_views   # NEW: store target view count
         
         self.cookie_error = 0
         self.sucsess_sent = 0
@@ -70,7 +72,12 @@ class Telegram:
                             if (
                                 await views_response.text() == "true" 
                                 and views_response.status == 200
-                            ): self.sucsess_sent += 1
+                            ): 
+                                self.sucsess_sent += 1
+                                # NEW: stop if target reached
+                                if self.target_views and self.sucsess_sent >= self.target_views:
+                                    print(f"\n🎯 Successfully reached {self.target_views} views. Stopping.")
+                                    exit(0)
                             else: self.failled_sent += 1
                         else: self.token_error += 1
                     else: self.cookie_error += 1
@@ -193,9 +200,10 @@ parser.add_argument('-pt', '--post', dest='post', help='Post number', type=int, 
 parser.add_argument('-t', '--type', dest='type', help='Proxy type', type=str, required=False)
 parser.add_argument('-m', '--mode', dest='mode', help='Proxy mode', type=str, required=True)
 parser.add_argument('-p', '--proxy', dest='proxy', help='Proxy file path or user:password@host:port', type=str, required=False)
+parser.add_argument('-a', '--amount', dest='target_views', help='Number of views to send (stop when reached)', type=int, required=False)   # NEW
 args = parser.parse_args()
 
-api = Telegram(args.channel, args.post)
+api = Telegram(args.channel, args.post, args.target_views)   # MODIFIED: pass target_views
 Thread(target=api.cli).start()
 
 if args.mode[0] == "l":
