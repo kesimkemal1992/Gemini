@@ -1,8 +1,7 @@
-# // Telegram Auto Views 2024 (FIXED) \\
-# - Added target views stop (-a)
-# - Fixed infinite waiting when no proxies
-# - Clear error messages, no screen clearing
-# - Works with manual proxy file or auto-scraping
+# // Telegram Auto Views 2024 (FIXED - No ProxyLink folder needed) \\
+# - Looks for http.txt, socks4.txt, socks5.txt in the same directory
+# - Stops after target views (-a)
+# - Clear error messages, no infinite waiting
 
 import aiohttp, asyncio
 from re import search, finditer
@@ -83,7 +82,6 @@ class Telegram:
             asyncio.run(inner(chunk))
 
     def run_auto_tasks(self, proxies_list):
-        # proxies_list is a list of (proxy_type, proxy) tuples
         async def inner(proxies_tuples):
             await asyncio.wait([asyncio.create_task(self.request(proxy, ptype)) for ptype, proxy in proxies_tuples])
         chunks = [proxies_list[i:i+self.tasks] for i in range(0, len(proxies_list), self.tasks)]
@@ -122,31 +120,25 @@ class Telegram:
 
 class Auto:
     def __init__(self):
-        self.proxies = []  # list of (type, ip:port)
-        self.load_sources()
+        self.proxies = []
+        # Look for .txt files in the CURRENT DIRECTORY (not ProxyLink folder)
+        self.http_sources = self.load_urls_from_file("http.txt")
+        self.socks4_sources = self.load_urls_from_file("socks4.txt")
+        self.socks5_sources = self.load_urls_from_file("socks5.txt")
+        
         if not self.http_sources and not self.socks4_sources and not self.socks5_sources:
-            print("[ERROR] No proxy source URLs found. Please add URLs to ProxyLink/*.txt")
-            print("Create folder 'ProxyLink' with files: http.txt, socks4.txt, socks5.txt")
+            print("[ERROR] No proxy source URLs found. Please create http.txt, socks4.txt, socks5.txt")
             print("Each file should contain one URL per line pointing to a raw proxy list.")
             exit(1)
         print("[*] Scraping proxies from sources...")
         asyncio.run(self.scrape_all())
         print(f"[✓] Found {len(self.proxies)} proxies. Starting views...")
 
-    def load_sources(self):
-        self.http_sources = []
-        self.socks4_sources = []
-        self.socks5_sources = []
-        if not os.path.exists("ProxyLink"):
-            print("[!] Folder 'ProxyLink' not found. Only manual proxy mode (-m l) will work.")
-            return
-        for fname, attr in [("http.txt", "http_sources"), ("socks4.txt", "socks4_sources"), ("socks5.txt", "socks5_sources")]:
-            path = os.path.join("ProxyLink", fname)
-            if os.path.exists(path):
-                with open(path, 'r') as f:
-                    setattr(self, attr, [line.strip() for line in f if line.strip()])
-            else:
-                setattr(self, attr, [])
+    def load_urls_from_file(self, filename):
+        if os.path.exists(filename):
+            with open(filename, 'r') as f:
+                return [line.strip() for line in f if line.strip()]
+        return []
 
     async def scrape_sources(self, urls, proxy_type):
         async with aiohttp.ClientSession() as session:
@@ -157,9 +149,8 @@ class Auto:
                         for match in REGEX.finditer(text):
                             proxy = match.group(1)
                             self.proxies.append((proxy_type, proxy))
-                except Exception as e:
-                    # silently ignore failed sources
-                    pass
+                except Exception:
+                    pass  # silently ignore failed sources
 
     async def scrape_all(self):
         tasks = []
