@@ -10,6 +10,7 @@ import random
 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 REGEX = compile(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?")
 
+# አዳዲስ እና የተለያዩ የፕሮክሲ ምንጮች
 AUTO_PROXY_SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000",
@@ -18,15 +19,16 @@ AUTO_PROXY_SOURCES = [
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-    "https://proxyspace.pro/http.txt"
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt"
 ]
 
 class Telegram:
-    def __init__(self, channel: str, post: int, amount: int) -> None:
-        self.tasks = 50 # በአንድ ጊዜ የሚሞከሩ ቪውዎች
+    def __init__(self, channel: str, post: int):
+        self.tasks = 250 # ከፍተኛ ፍጥነት
         self.channel = channel
         self.post = post
-        self.amount = amount
         self.sucsess_sent = 0
         self.proxy_error = 0
         self.proxies = []
@@ -49,32 +51,28 @@ class Telegram:
         except: pass
 
     async def request(self, proxy: str, proxy_type: str):
-        if self.sucsess_sent >= self.amount: return
         try:
             connector = ProxyConnector.from_url(f'{proxy_type}://{proxy}')
             jar = aiohttp.CookieJar(unsafe=True) 
             async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
-                # 1. ፖስቱን መክፈት
+                # 1. Embed ገጹን መክፈት
                 async with session.get(
                     f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme', 
                     headers={'referer': f'https://t.me/{self.channel}/{self.post}', 'user-agent': user_agent},
-                    timeout=20
+                    timeout=10
                 ) as embed_response:
                     
                     html = await embed_response.text()
                     token = search(r'data-view="([^"]+)"', html)
                     
                     if token:
-                        # --- እዚህ ጋር 10 ሰከንድ ይጠብቃል ---
-                        await asyncio.sleep(10)
-                        
-                        # 2. ከዚያ ቪው ይልካል
+                        # 2. ወዲያውኑ ቪው መላክ (ያለ ገደብ)
                         async with session.post(
                             f'https://t.me/v/?views={token.group(1)}', 
                             headers={
                                 'referer': f'https://t.me/{self.channel}/{self.post}?embed=1&mode=tme',
                                 'user-agent': user_agent, 'x-requested-with': 'XMLHttpRequest'
-                            }, timeout=15
+                            }, timeout=10
                         ) as v_resp:
                             if (await v_resp.text() == "true"):
                                 self.sucsess_sent += 1
@@ -82,40 +80,36 @@ class Telegram:
             self.proxy_error += 1
 
     async def run_auto_tasks(self):
-        while self.sucsess_sent < self.amount:
+        while True:
             print(f" [!] ፕሮክሲዎች እየታደሱ ነው...")
             await self.scrap_all()
             
             if not self.proxies:
                 await asyncio.sleep(5); continue
 
+            # ፕሮክሲዎቹን በ 250 Tasks መከፋፈል
             for i in range(0, len(self.proxies), self.tasks):
-                if self.sucsess_sent >= self.amount: break
                 batch = self.proxies[i:i+self.tasks]
                 tasks_list = [self.request(p, pt) for pt, p in batch]
                 await asyncio.gather(*tasks_list)
-                # 50ው እስኪጨርሱ ለ 2 ሰከንድ እረፍት
-                await asyncio.sleep(2)
             
             await asyncio.sleep(2)
 
     def cli(self):
-        while self.sucsess_sent < self.amount:
-            print(f"\n--- [ TG VIEWS - 10s WAIT MODE ] ---")
+        while True:
+            print(f"\n--- [ TG VIEWS HIGH-SPEED ] ---")
             print(f"Target: @{self.channel}/{self.post}")
-            print(f"Success: {self.sucsess_sent} / {self.amount}")
+            print(f"Success Logs: {self.sucsess_sent}")
             print(f"Errors: {self.proxy_error}")
-            print(f"------------------------------------\n")
+            print(f"-------------------------------\n")
             sleep(10)
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument('-c', '--channel', required=True)
     parser.add_argument('-pt', '--post', required=True, type=int)
-    parser.add_argument('-m', '--mode', default='auto')
-    parser.add_argument('-a', '--amount', default=5000, type=int)
     args = parser.parse_args()
 
-    api = Telegram(args.channel, args.post, args.amount)
+    api = Telegram(args.channel, args.post)
     Thread(target=api.cli, daemon=True).start()
     asyncio.run(api.run_auto_tasks())
