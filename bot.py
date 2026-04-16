@@ -53,7 +53,7 @@ class ProxyFetcher:
             return []
 
     @staticmethod
-    async def validate_proxies(proxies: List[str], limit: int = 100) -> List[str]:
+    async def validate_proxies(proxies: List[str], limit: int = 150) -> List[str]:
         if not proxies:
             return []
         valid = []
@@ -78,7 +78,7 @@ class ProxyFetcher:
         logging.info(f"Validated {len(valid)} working proxies out of {len(test_proxies)} tested")
         return valid
 
-# ------------------ View Booster (UPDATED TOKEN EXTRACTION) ------------------
+# ------------------ View Booster (CORRECT ENDPOINT) ------------------
 class TelegramBooster:
     def __init__(self, channel: str, post_id: int, concurrency: int = MAX_CONCURRENT):
         self.channel = channel
@@ -90,44 +90,38 @@ class TelegramBooster:
         url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
         headers = {"User-Agent": self.ua.random}
         connector = ProxyConnector.from_url(f"http://{proxy}")
-
         try:
             async with aiohttp.ClientSession(connector=connector) as sess:
                 async with sess.get(url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
                     text = await resp.text()
-                    
-                    # --- UPDATED TOKEN EXTRACTION LOGIC ---
-                    # Look for the data-view attribute, which contains the token.
+                    # Extract token from data-view attribute
                     match = re.search(r'data-view="([^"]+)"', text)
                     if not match:
-                        logging.warning(f"Could not find 'data-view' token for post {self.channel}/{self.post_id}. Response snippet: {text[:500]}")
+                        logging.warning(f"No token found for {self.channel}/{self.post_id}")
                         return None
                     return match.group(1)
         except Exception as e:
-            logging.warning(f"Token fetch failed for proxy {proxy}: {e}")
+            logging.warning(f"Token fetch error: {e}")
             return None
 
     async def _send_view(self, token: str, proxy: str) -> bool:
-        # The POST request now goes to the '/v/' endpoint.
-        url = f"https://t.me/v/?views={token}"
+        # CORRECT ENDPOINT (as per original telegram-views)
+        url = "https://t.me/iv"
         headers = {
             "User-Agent": self.ua.random,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://t.me",
             "Referer": f"https://t.me/{self.channel}/{self.post_id}",
-            "X-Requested-With": "XMLHttpRequest"
         }
+        data = f"token={token}&post_id={self.post_id}&channel={self.channel}"
         connector = ProxyConnector.from_url(f"http://{proxy}")
         try:
             async with aiohttp.ClientSession(connector=connector) as sess:
-                async with sess.post(url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
-                    response_text = await resp.text()
-                    # A successful request returns the string "true".
-                    if response_text == "true" and resp.status == 200:
-                        return True
-                    else:
-                        logging.warning(f"View send failed. Status: {resp.status}, Response: {response_text[:100]}")
-                        return False
+                async with sess.post(url, headers=headers, data=data, timeout=VIEW_TIMEOUT) as resp:
+                    # HTTP 200 means the view was registered
+                    return resp.status == 200
         except Exception as e:
-            logging.warning(f"Send view failed for proxy {proxy}: {e}")
+            logging.warning(f"Send view error: {e}")
             return False
 
     async def send_one_view(self, proxy: str) -> bool:
@@ -162,7 +156,7 @@ class TelegramBooster:
 # ------------------ Bot Handlers ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 *Ultimate View Bot (Live Proxies)* 🔥\n\n"
+        "🔥 *Ultimate View Bot* 🔥\n\n"
         "Send me a Telegram post URL like:\n"
         "`https://t.me/durov/123`\n\n"
         "Then I'll ask how many views you want.\n"
