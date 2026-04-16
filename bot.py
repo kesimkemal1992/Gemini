@@ -18,58 +18,40 @@ from telegram.ext import (
 )
 
 # ------------------ Configuration ------------------
-# Read token from environment variable (Railway)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set! Add it in Railway Variables.")
+    raise ValueError("BOT_TOKEN environment variable not set!")
 
-MAX_CONCURRENT = 20          # Concurrent requests
-VIEW_TIMEOUT = 15            # Seconds per request
+MAX_CONCURRENT = 30          # Higher concurrency for 5000+ views (Railway allows ~30-50)
+VIEW_TIMEOUT = 10            # Reduced timeout for speed
+PROXY_FILE = "proxies.txt"   # Single file with all proxies (ip:port, one per line)
 
 # Conversation states
 WAITING_FOR_LINK, WAITING_FOR_COUNT = range(2)
 
-# ------------------ Proxy Scraper (from original repo) ------------------
-class AutoScraper:
-    def __init__(self):
-        self.proxies = []
-
-    async def fetch_proxies(self) -> List[str]:
-        """Scrape proxies from all sources."""
-        sources = []
-        for fname in ["auto/http.txt", "auto/socks4.txt", "auto/socks5.txt"]:
-            try:
-                with open(fname, "r") as f:
-                    sources.extend([line.strip() for line in f if line.strip()])
-            except FileNotFoundError:
-                logging.warning(f"Missing {fname}, skipping.")
-
-        if not sources:
-            logging.error("No proxy source files found. Did you create the auto/ folder?")
+# ------------------ Proxy Loader (Single File) ------------------
+class ProxyLoader:
+    @staticmethod
+    async def load_proxies() -> List[str]:
+        """Load proxies from proxies.txt (ip:port format)."""
+        proxies = []
+        try:
+            with open(PROXY_FILE, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        # Ensure format is ip:port (no protocol)
+                        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}$", line):
+                            proxies.append(line)
+                        else:
+                            logging.warning(f"Skipping invalid proxy: {line}")
+            logging.info(f"Loaded {len(proxies)} proxies from {PROXY_FILE}")
+        except FileNotFoundError:
+            logging.error(f"Proxy file {PROXY_FILE} not found! Please create it.")
             return []
+        return proxies
 
-        async def fetch_one(url: str) -> List[str]:
-            try:
-                async with aiohttp.ClientSession() as sess:
-                    async with sess.get(url, timeout=10) as resp:
-                        text = await resp.text()
-                        # Extract IP:PORT
-                        ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b", text)
-                        return list(set(ips))
-            except Exception as e:
-                logging.warning(f"Failed to fetch {url}: {e}")
-                return []
-
-        tasks = [fetch_one(url) for url in sources]
-        results = await asyncio.gather(*tasks)
-        all_proxies = []
-        for res in results:
-            all_proxies.extend(res)
-        unique = list(set(all_proxies))
-        logging.info(f"Scraped {len(unique)} proxies")
-        return unique
-
-# ------------------ View Booster (adapted from telegram-views) ------------------
+# ------------------ View Booster (Optimized for High Volume) ------------------
 class TelegramBooster:
     def __init__(self, channel: str, post_id: int, concurrency: int = MAX_CONCURRENT):
         self.channel = channel
@@ -77,12 +59,11 @@ class TelegramBooster:
         self.concurrency = concurrency
         self.ua = UserAgent()
 
-    async def _get_view_token(self, proxy: str, proxy_type: str) -> Optional[str]:
+    async def _get_view_token(self, proxy: str) -> Optional[str]:
+        """Get token using HTTP proxy (default)."""
         url = f"https://t.me/{self.channel}/{self.post_id}?embed=1"
         headers = {"User-Agent": self.ua.random}
-        connector = None
-        if proxy:
-            connector = ProxyConnector.from_url(f"{proxy_type}://{proxy}")
+        connector = ProxyConnector.from_url(f"http://{proxy}")
         try:
             async with aiohttp.ClientSession(connector=connector) as sess:
                 async with sess.get(url, headers=headers, timeout=VIEW_TIMEOUT) as resp:
@@ -92,16 +73,14 @@ class TelegramBooster:
         except Exception:
             return None
 
-    async def _send_view(self, token: str, proxy: str, proxy_type: str) -> bool:
+    async def _send_view(self, token: str, proxy: str) -> bool:
         url = "https://t.me/iv"
         headers = {
             "User-Agent": self.ua.random,
             "Content-Type": "application/x-www-form-urlencoded",
         }
         data = f"token={token}&post_id={self.post_id}&channel={self.channel}"
-        connector = None
-        if proxy:
-            connector = ProxyConnector.from_url(f"{proxy_type}://{proxy}")
+        connector = ProxyConnector.from_url(f"http://{proxy}")
         try:
             async with aiohttp.ClientSession(connector=connector) as sess:
                 async with sess.post(url, headers=headers, data=data, timeout=VIEW_TIMEOUT) as resp:
@@ -109,48 +88,51 @@ class TelegramBooster:
         except Exception:
             return False
 
-    async def send_one_view(self, proxy: str, proxy_type: str) -> bool:
-        token = await self._get_view_token(proxy, proxy_type)
+    async def send_one_view(self, proxy: str) -> bool:
+        token = await self._get_view_token(proxy)
         if token:
-            return await self._send_view(token, proxy, proxy_type)
+            return await self._send_view(token, proxy)
         return False
 
-    async def send_views(self, proxies: List[str], proxy_type: str, target_count: int) -> int:
-        """Send views using a rotating proxy list until target reached."""
+    async def send_views(self, proxies: List[str], target_count: int) -> int:
+        """Send views using rotating proxies."""
         if not proxies:
             return 0
         semaphore = asyncio.Semaphore(self.concurrency)
         success = 0
+        proxy_count = len(proxies)
 
         async def worker(proxy: str):
             nonlocal success
             if success >= target_count:
                 return
             async with semaphore:
-                ok = await self.send_one_view(proxy, proxy_type)
+                ok = await self.send_one_view(proxy)
                 if ok:
                     success += 1
 
-        # Cycle through proxies
-        proxy_cycle = (proxies[i % len(proxies)] for i in range(target_count * 2))
-        tasks = [worker(next(proxy_cycle)) for _ in range(target_count)]
+        # Create tasks, cycling through proxies
+        tasks = []
+        for i in range(target_count):
+            proxy = proxies[i % proxy_count]
+            tasks.append(worker(proxy))
         await asyncio.gather(*tasks)
         return success
 
-# ------------------ Bot Handlers (Conversation) ------------------
+# ------------------ Bot Handlers ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 *Ultimate View Bot* 🔥\n\n"
+        "🔥 *Ultimate View Bot (5000+ ready)* 🔥\n\n"
         "Send me a Telegram post URL like:\n"
         "`https://t.me/durov/123`\n\n"
-        "Then I'll ask how many views you want.",
+        "Then I'll ask how many views you want.\n"
+        "I will use proxies from `proxies.txt` to send them.",
         parse_mode="Markdown"
     )
     return WAITING_FOR_LINK
 
 async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    # Validate URL
     match = re.search(r"t\.me/([^/]+)/(\d+)", url)
     if not match:
         await update.message.reply_text("❌ Invalid URL. Use format: `https://t.me/username/post_id`", parse_mode="Markdown")
@@ -162,8 +144,9 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["post_id"] = post_id
 
     await update.message.reply_text(
-        f"✅ Target set: `{channel}/{post_id}`\n\n"
-        "Now send me the *number of views* you want (e.g., 100).",
+        f"✅ Target: `{channel}/{post_id}`\n\n"
+        "Now send the *number of views* (e.g., 5000).\n"
+        "⚠️ Large numbers may take several minutes.",
         parse_mode="Markdown"
     )
     return WAITING_FOR_COUNT
@@ -174,44 +157,42 @@ async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if count <= 0:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Please send a positive integer (e.g., 50).")
+        await update.message.reply_text("❌ Send a positive integer (e.g., 1000).")
         return WAITING_FOR_COUNT
 
     channel = context.user_data["channel"]
     post_id = context.user_data["post_id"]
 
     status_msg = await update.message.reply_text(
-        f"🚀 Starting to send *{count}* views to `{channel}/{post_id}`...\n"
-        "🌐 Scraping proxies...",
+        f"🚀 Sending *{count}* views to `{channel}/{post_id}`...\n"
+        "📂 Loading proxies...",
         parse_mode="Markdown"
     )
 
-    # Step 1: Scrape proxies
-    scraper = AutoScraper()
-    proxies = await scraper.fetch_proxies()
+    # Load proxies from single file
+    proxies = await ProxyLoader.load_proxies()
     if not proxies:
-        await status_msg.edit_text("❌ No proxies found. Try again later or check your auto/*.txt files.")
+        await status_msg.edit_text("❌ No proxies found. Please upload `proxies.txt` with at least 100 proxies.")
         return ConversationHandler.END
 
-    await status_msg.edit_text(f"📡 Found {len(proxies)} proxies. Sending views...")
+    await status_msg.edit_text(f"📡 Loaded {len(proxies)} proxies. Sending {count} views...\n⏱️ This may take a while.")
 
-    # Step 2: Send views (use http proxies, most common)
     booster = TelegramBooster(channel, post_id, concurrency=MAX_CONCURRENT)
-    sent = await booster.send_views(proxies, "http", count)
+    sent = await booster.send_views(proxies, count)
 
     await status_msg.edit_text(
-        f"✅ *Done!*\n"
-        f"Successfully sent {sent} out of {count} views to `{channel}/{post_id}`.\n\n"
+        f"✅ *Complete!*\n"
+        f"Successfully sent {sent} out of {count} views.\n"
+        f"Success rate: {sent/count*100:.1f}%\n\n"
         f"Use /start to try another post.",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled. Use /start to begin again.")
+    await update.message.reply_text("Cancelled. Use /start to begin again.")
     return ConversationHandler.END
 
-# ------------------ Main ------------------
 def main():
     logging.basicConfig(level=logging.INFO)
     app = Application.builder().token(BOT_TOKEN).build()
