@@ -24,7 +24,7 @@ class ViewEngine:
         self.proxies = []
         self.custom_urls = []
         self.custom_ips = []
-        self.sem = asyncio.Semaphore(1500) # ለ Railway አስተማማኝ ፍጥነት
+        self.sem = asyncio.Semaphore(1000) # ለ Railway የተመጣጠነ ፍጥነት
 
     async def get_views(self):
         try:
@@ -44,13 +44,8 @@ class ViewEngine:
         async with aiohttp.ClientSession() as s:
             for url in all_srcs:
                 try:
-                    async with s.get(url, timeout=10) as r:
+                    async with s.get(url, timeout=5) as r:
                         content = await r.text()
-                        if "application/json" in r.headers.get("Content-Type", "") or "{" in content:
-                            try:
-                                data = await r.json()
-                                for p in data.get('data', []): temp.append(('socks5', f"{p['ip']}:{p['port']}"))
-                            except: pass
                         found = re.findall(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?", content)
                         temp.extend([('socks5', p) for p in found])
                 except: pass
@@ -62,7 +57,7 @@ class ViewEngine:
             if not self.is_running: return
             try:
                 conn = ProxyConnector.from_url(f"{pt}://{p}")
-                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=7, connect=3)) as s:
+                async with aiohttp.ClientSession(connector=conn, timeout=aiohttp.ClientTimeout(total=8, connect=3)) as s:
                     async with s.get(f"https://t.me/{self.channel}/{self.post_id}?embed=1") as r:
                         token = re.search(r'data-view="([^"]+)"', await r.text())
                         if token:
@@ -73,6 +68,9 @@ class ViewEngine:
 engine = ViewEngine()
 
 async def work(msg):
+    # መጀመሪያ ፕሮክሲዎችን እንሰብስብ
+    await engine.scrape_all()
+    
     while engine.is_running:
         new_views = await engine.get_views()
         if new_views > 0: engine.current_views = new_views
@@ -80,53 +78,54 @@ async def work(msg):
         added = max(0, engine.current_views - engine.start_views)
         if engine.current_views >= (engine.start_views + engine.target):
             engine.is_running = False
-            await msg.edit_text(f"✅ ተጠናቋል!\nቪው: {engine.current_views}")
+            await msg.edit_text(f"✅ ተጠናቋል!\nጠቅላላ ቪው: {engine.current_views}")
             break
 
         prog = min(100, int((added / engine.target) * 100)) if engine.target > 0 else 0
-        bar = "▓" * (prog // 10) + "░" * (10 - (prog // 10))
         elapsed = time.time() - engine.start_time
         speed = int(added / (elapsed / 60)) if elapsed > 0 else 0
         
-        text = (f"🚀 **ULTRA TURBO ACTIVE**\n"
+        text = (f"🚀 **ULTRA TURBO V4**\n"
                 f"━━━━━━━━━━━━━━━\n"
-                f"📊 Progress: [{bar}] {prog}%\n"
+                f"📊 Progress: {prog}%\n"
                 f"✅ Views: `{engine.current_views}`\n"
                 f"⚡ Speed: `{speed} v/min`\n"
                 f"🛠 Success: `{engine.success}`\n"
                 f"━━━━━━━━━━━━━━━\n"
-                f"💡 መቁጠር ካቆመ ቴሌግራም Freeze እያደረገ ነው...")
+                f"💡 Success እየጨመረ ከሆነ ቦቱ እየሰራ ነው።")
         
         try: await msg.edit_text(text, parse_mode="Markdown")
         except: pass
         
-        await engine.scrape_all()
-        
-        # ስራውን በ 500 በ 500 እየከፈለ በፍጥነት ይረጨዋል
-        batch_size = 500
+        # ስራውን በ 300 በ 300 ከፋፍሎ መላክ (ለ Railway ቀለል እንዲለው)
+        batch_size = 300
         for i in range(0, len(engine.proxies), batch_size):
             if not engine.is_running: break
             batch = engine.proxies[i:i+batch_size]
             await asyncio.gather(*[engine.hit(pt, p) for pt, p in batch])
-            await asyncio.sleep(0.1) # ለ Railway ትንፋሽ መስጫ
+            # በየ ባቹ መካከል በጣም ትንሽ እረፍት (0.05) ለሰርቨሩ
+            await asyncio.sleep(0.05)
+        
+        # በየ ዙሩ ፕሮክሲዎችን ማደስ
+        await engine.scrape_all()
 
 async def start(update, context):
     await update.message.reply_text("👋 ቦቱ ዝግጁ ነው! `/add channel post_id target` ይላኩ።")
 
-async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 3: return await update.message.reply_text("💡 `/add channel post_id target` ይላኩ")
+async def add(update, context):
+    if len(context.args) < 3: return await update.message.reply_text("💡 አጠቃቀም፦ `/add channel post_id target`")
     if engine.is_running: return await update.message.reply_text("⚠️ ቦቱ ስራ ላይ ነው!")
     
     engine.channel, engine.post_id, engine.target = context.args[0].replace("@",""), int(context.args[1]), int(context.args[2])
     engine.is_running, engine.success, engine.start_time = True, 0, time.time()
     engine.start_views = await engine.get_views()
     
-    msg = await update.message.reply_text("🔥 ፍጥነት እየጨመረ ነው...")
+    msg = await update.message.reply_text("🔥 ስራ ተጀምሯል...")
     context.application.create_task(work(msg))
 
 async def stop(update, context):
     engine.is_running = False
-    await update.message.reply_text("🛑 ስራው ተቋርጧል!")
+    await update.message.reply_text("🛑 ቆሟል!")
 
 async def handle_msg(update, context):
     txt = update.message.text
