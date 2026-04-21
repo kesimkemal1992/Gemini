@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- CONFIG ---
-BOT_TOKEN = "8254387734:AAEd4VK_abdQuwgbFEiadoqj7UwlxDpmg3A"
+BOT_TOKEN = "8254387734:AAGR0IdVPqIrIQjETI4yZIRYhSgNnLBg6uA"
 
 # አንተ የሰጠኸኝ 30+ የፕሮክሲ ምንጮች
 PROXY_SOURCES = [
